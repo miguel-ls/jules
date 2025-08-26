@@ -10,9 +10,11 @@
             </li>
             <li class="nav-item dropdown">
                 <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                    Mantenimientos
+                    Configuración
                 </a>
                 <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                    <a class="dropdown-item" href="admin_usuarios.php">Usuarios</a>
+                    <div class="dropdown-divider"></div>
                     <a class="dropdown-item" href="admin_tipos_piscina.php">Tipos de Piscina</a>
                     <a class="dropdown-item" href="admin_formas_pago.php">Formas de Pago</a>
                     <a class="dropdown-item" href="admin_profesores.php">Profesores</a>
