@@ -1,106 +1,120 @@
 <?php
-$errors = [];
+// public/login.php
+
+// Incluir el archivo de configuración para la conexión a la BD y el inicio de sesión
+require_once __DIR__ . '/../config/database.php';
 
 // Si el usuario ya está logueado, redirigir al dashboard
-require_once __DIR__ . '/../config/config.php';
-if (isset($_SESSION['usuario_id'])) {
-    header('Location: dashboard.php');
-    exit;
+if (isset($_SESSION['id_usuario'])) {
+    header("Location: dashboard.php");
+    exit();
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+$error_message = '';
 
-    require_once __DIR__ . '/../src/lib/database.php';
-    $db = Database::getConnection();
+// Procesar el formulario cuando se envía
+if ($_SERVER["REQUEST_METHOD"] == "POST") {
+    if (empty(trim($_POST["nombre_usuario"])) || empty(trim($_POST["password"]))) {
+        $error_message = "Por favor, ingrese su nombre de usuario y contraseña.";
+    } else {
+        $nombre_usuario = trim($_POST["nombre_usuario"]);
+        $password = trim($_POST["password"]);
 
-    $email = trim($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
+        $conn = getDBConnection();
 
-    if (empty($email) || empty($password)) {
-        $errors[] = 'El correo y la contraseña son obligatorios.';
-    }
+        if ($conn) {
+            // Llamar al procedimiento almacenado para obtener los datos del usuario
+            $stmt = $conn->prepare("CALL sp_usuario_leer_por_nombre_usuario(?)");
+            $stmt->bind_param("s", $nombre_usuario);
+            $stmt->execute();
+            $result = $stmt->get_result();
 
-    if (empty($errors)) {
-        $stmt = $db->prepare("SELECT id, nombre, password, rol, email_verificado FROM usuarios WHERE email = ?");
-        $stmt->bind_param("s", $email);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $user = $result->fetch_assoc();
-        $stmt->close();
+            if ($result->num_rows == 1) {
+                $user = $result->fetch_assoc();
 
-        if ($user && password_verify($password, $user['password'])) {
-            // Contraseña correcta
+                // Verificar la contraseña
+                if (password_verify($password, $user['password_hash'])) {
+                    // Contraseña correcta, iniciar el flujo de 2FA
+                    $auth_code = rand(100000, 999999);
+                    $expiry_time = date('Y-m-d H:i:s', strtotime('+15 minutes'));
 
-            if (!$user['email_verificado']) {
-                $errors[] = 'Tu cuenta no ha sido verificada. Por favor, revisa tu correo electrónico.';
-            } else {
-                // Regenerar ID de sesión para seguridad
-                session_regenerate_id(true);
-
-                // Guardar datos del usuario en la sesión
-                $_SESSION['usuario_id'] = $user['id'];
-                $_SESSION['usuario_nombre'] = $user['nombre'];
-                $_SESSION['usuario_rol'] = $user['rol'];
-
-                // Redirigir según el rol
-                if ($user['rol'] === 'admin') {
-                    // Iniciar proceso de 2FA para administradores
-                    $user_id = $user['id'];
-                    $codigo_2fa = str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-                    $expires = date('Y-m-d H:i:s', time() + 600); // Válido por 10 minutos
-
-                    // Guardar el código en la base de datos
-                    $stmt_2fa = $db->prepare("INSERT INTO two_factor_codes (usuario_id, codigo, fecha_expiracion) VALUES (?, ?, ?)");
-                    $stmt_2fa->bind_param("iss", $user_id, $codigo_2fa, $expires);
+                    // Guardar el código en la BD
+                    $stmt_2fa = $conn->prepare("CALL sp_usuario_guardar_codigo_2fa(?, ?, ?)");
+                    $stmt_2fa->bind_param("iss", $user['id_usuario'], $auth_code, $expiry_time);
                     $stmt_2fa->execute();
                     $stmt_2fa->close();
 
-                    // Guardar ID de usuario temporalmente en la sesión para verificar en la siguiente página
-                    $_SESSION['2fa_user_id'] = $user_id;
+                    // Simulación de envío de email
+                    // En un proyecto real, aquí iría la lógica para enviar el email.
+                    // mail($user['email'], 'Tu código de verificación', 'Tu código es: ' . $auth_code);
 
-                    // Simular envío de email mostrando el código
-                    $_SESSION['2fa_code_flash'] = $codigo_2fa;
+                    // Guardar temporalmente el ID de usuario y el código para la demo
+                    $_SESSION['2fa_user_id'] = $user['id_usuario'];
+                    $_SESSION['2fa_code_demo'] = $auth_code; // SOLO PARA DEMO
 
-                    header('Location: verificar_2fa.php');
+                    // Redirigir a la página de verificación 2FA
+                    header("Location: verificar_2fa.php");
+                    exit();
                 } else {
-                    // Login normal para clientes
-                    header('Location: dashboard.php');
+                    // Contraseña incorrecta
+                    $error_message = "La contraseña ingresada no es válida.";
                 }
-                exit;
+            } else {
+                // Usuario no encontrado
+                $error_message = "No se encontró ninguna cuenta con ese nombre de usuario.";
             }
 
+            $stmt->close();
+            $conn->close();
         } else {
-            // Usuario no encontrado o contraseña incorrecta
-            $errors[] = 'Correo electrónico o contraseña incorrectos.';
+            $error_message = "Error de conexión con la base de datos.";
         }
     }
 }
-
-include __DIR__ . '/../templates/partials/header.php';
 ?>
 
-<div class="form-container">
-    <h2>Iniciar Sesión</h2>
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Iniciar Sesión - Sistema de Matrícula</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f4f4f4; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .login-container { background-color: #fff; padding: 20px 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h2 { text-align: center; color: #333; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; color: #555; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        .btn { background-color: #0056b3; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; }
+        .btn:hover { background-color: #004494; }
+        .error-message { color: #d9534f; background-color: #f2dede; border: 1px solid #ebccd1; padding: 10px; border-radius: 4px; text-align: center; margin-bottom: 15px; }
+    </style>
+</head>
+<body>
 
-    <?php if (!empty($errors)): ?>
-        <div class="alert alert-danger">
-            <?php foreach ($errors as $error): ?>
-                <p><?php echo htmlspecialchars($error); ?></p>
-            <?php endforeach; ?>
-        </div>
+<div class="login-container">
+    <h2>Iniciar Sesión</h2>
+    <p>Acceso al panel de administración</p>
+
+    <?php if (!empty($error_message)): ?>
+        <div class="error-message"><?php echo htmlspecialchars($error_message); ?></div>
     <?php endif; ?>
 
-    <form action="login.php" method="POST">
+    <form action="<?php echo htmlspecialchars($_SERVER["PHP_SELF"]); ?>" method="post">
         <div class="form-group">
-            <label for="email">Correo Electrónico</label>
-            <input type="email" id="email" name="email" required>
+            <label for="nombre_usuario">Nombre de Usuario</label>
+            <input type="text" name="nombre_usuario" id="nombre_usuario" required>
         </div>
         <div class="form-group">
             <label for="password">Contraseña</label>
-            <input type="password" id="password" name="password" required>
+            <input type="password" name="password" id="password" required>
         </div>
-        <button type="submit" class="btn">Acceder</button>
+        <div class="form-group">
+            <button type="submit" class="btn">Ingresar</button>
+        </div>
     </form>
 </div>
 
-<?php include __DIR__ . '/../templates/partials/footer.php'; ?>
+</body>
+</html>

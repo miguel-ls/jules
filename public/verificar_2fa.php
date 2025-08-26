@@ -1,97 +1,105 @@
 <?php
-require_once __DIR__ . '/../src/lib/database.php';
-$db = Database::getConnection();
+require_once __DIR__ . '/../config/database.php';
 
-// Proteger la página: el usuario debe haber pasado la primera fase de login
+// Si el usuario no ha pasado el primer paso de login, no debería estar aquí.
 if (!isset($_SESSION['2fa_user_id'])) {
-    header('Location: login.php');
-    exit;
+    header("Location: login.php");
+    exit();
 }
 
-$errors = [];
-$user_id = $_SESSION['2fa_user_id'];
+$error_message = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $code = trim($_POST['code'] ?? '');
+    $submitted_code = trim($_POST['auth_code']);
+    $user_id = $_SESSION['2fa_user_id'];
 
-    if (empty($code)) {
-        $errors[] = 'El código de verificación es obligatorio.';
+    if (empty($submitted_code)) {
+        $error_message = "Por favor, ingrese el código de verificación.";
     } else {
-        $current_time = date('Y-m-d H:i:s');
+        $conn = getDBConnection();
+        if ($conn) {
+            // No tenemos un SP para leer solo el código, así que leemos todo el usuario
+            $stmt = $conn->prepare("CALL sp_usuario_leer_por_id(?)");
+            $stmt->bind_param("i", $user_id);
+            $stmt->execute();
+            $result = $stmt->get_result();
 
-        // Buscar el código en la base de datos
-        $stmt = $db->prepare("SELECT id, fecha_expiracion FROM two_factor_codes WHERE usuario_id = ? AND codigo = ?");
-        $stmt->bind_param("is", $user_id, $code);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $code_data = $result->fetch_assoc();
-        $stmt->close();
+            if ($result->num_rows == 1) {
+                $user = $result->fetch_assoc();
 
-        if (!$code_data) {
-            $errors[] = 'El código de verificación es incorrecto.';
-        } elseif ($code_data['fecha_expiracion'] < $current_time) {
-            $errors[] = 'El código de verificación ha expirado.';
+                // Verificar que el código no haya expirado y que coincida
+                if (strtotime($user['auth_code_2fa_expiry']) > time() && $user['auth_code_2fa'] == $submitted_code) {
+                    // ¡Éxito! Limpiar variables 2FA y establecer sesión final
+                    unset($_SESSION['2fa_user_id']);
+                    unset($_SESSION['2fa_code_demo']); // SOLO PARA DEMO
+
+                    $_SESSION['id_usuario'] = $user['id_usuario'];
+                    $_SESSION['nombre_usuario'] = $user['nombre_usuario'];
+                    $_SESSION['rol'] = $user['rol'];
+
+                    header("Location: dashboard.php");
+                    exit();
+                } else {
+                    $error_message = "El código es incorrecto o ha expirado.";
+                }
+            } else {
+                $error_message = "Error al verificar la cuenta de usuario.";
+            }
+            $stmt->close();
+            $conn->close();
         } else {
-            // Código correcto y válido
-
-            // 1. Limpiar códigos de 2FA para este usuario
-            $stmt_delete = $db->prepare("DELETE FROM two_factor_codes WHERE usuario_id = ?");
-            $stmt_delete->bind_param("i", $user_id);
-            $stmt_delete->execute();
-            $stmt_delete->close();
-
-            // 2. Obtener datos del usuario para la sesión final
-            $stmt_user = $db->prepare("SELECT id, nombre, rol FROM usuarios WHERE id = ?");
-            $stmt_user->bind_param("i", $user_id);
-            $stmt_user->execute();
-            $user = $stmt_user->get_result()->fetch_assoc();
-            $stmt_user->close();
-
-            // 3. Establecer la sesión final
-            session_regenerate_id(true);
-            $_SESSION['usuario_id'] = $user['id'];
-            $_SESSION['usuario_nombre'] = $user['nombre'];
-            $_SESSION['usuario_rol'] = $user['rol'];
-            unset($_SESSION['2fa_user_id']); // Limpiar la sesión temporal
-
-            header('Location: admin/index.php');
-            exit;
+            $error_message = "Error de conexión con la base de datos.";
         }
     }
 }
-
-// Para la demostración, mostrar el código que se "envió por correo"
-$flash_code = $_SESSION['2fa_code_flash'] ?? null;
-unset($_SESSION['2fa_code_flash']); // Borrar después de mostrar
-
-include __DIR__ . '/../templates/partials/header.php';
 ?>
 
-<div class="form-container">
-    <h2>Verificación de Dos Pasos</h2>
-    <p>Se ha enviado un código de 6 dígitos a tu correo electrónico. Introdúcelo a continuación.</p>
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verificación de Dos Factores</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f4f4f4; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .login-container { background-color: #fff; padding: 20px 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
+        h2 { color: #333; }
+        p { color: #555; }
+        .form-group { margin-bottom: 15px; }
+        input[type="text"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; text-align: center; font-size: 1.2em; letter-spacing: 5px; }
+        .btn { background-color: #0056b3; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; }
+        .btn:hover { background-color: #004494; }
+        .error-message { color: #d9534f; background-color: #f2dede; border: 1px solid #ebccd1; padding: 10px; border-radius: 4px; margin-bottom: 15px; }
+        .demo-code { background-color: #e9ecef; color: #495057; padding: 10px; border-radius: 4px; font-family: monospace; }
+    </style>
+</head>
+<body>
 
-    <?php if ($flash_code): ?>
-    <div class="alert alert-success">
-        <strong>Para fines de demostración:</strong> Tu código es <?php echo htmlspecialchars($flash_code); ?>
+<div class="login-container">
+    <h2>Verificación Requerida</h2>
+    <p>Hemos enviado un código de verificación a su correo. Por favor, ingréselo a continuación.</p>
+
+    <!-- Bloque solo para demostración -->
+    <div style="margin-bottom: 15px;">
+        <small>Para fines de demostración, el código es:</small>
+        <div class="demo-code"><?= htmlspecialchars($_SESSION['2fa_code_demo'] ?? 'Error') ?></div>
     </div>
+    <!-- Fin del bloque de demostración -->
+
+    <?php if (!empty($error_message)): ?>
+        <div class="error-message"><?= htmlspecialchars($error_message); ?></div>
     <?php endif; ?>
 
-    <?php if (!empty($errors)): ?>
-        <div class="alert alert-danger">
-            <?php foreach ($errors as $error): ?>
-                <p><?php echo htmlspecialchars($error); ?></p>
-            <?php endforeach; ?>
-        </div>
-    <?php endif; ?>
-
-    <form action="verificar_2fa.php" method="POST">
+    <form action="verificar_2fa.php" method="post">
         <div class="form-group">
-            <label for="code">Código de 6 dígitos</label>
-            <input type="text" id="code" name="code" required maxlength="6" pattern="\d{6}" title="Debe ser un código de 6 dígitos.">
+            <input type="text" name="auth_code" maxlength="6" required>
         </div>
-        <button type="submit" class="btn">Verificar y Acceder</button>
+        <div class="form-group">
+            <button type="submit" class="btn">Verificar</button>
+        </div>
     </form>
+    <a href="login.php">Volver a iniciar sesión</a>
 </div>
 
-<?php include __DIR__ . '/../templates/partials/footer.php'; ?>
+</body>
+</html>
